@@ -416,7 +416,8 @@ This is an important design decision. Think about what happens if you embed revi
 A popular restaurant could have thousands of reviews. Every time you fetch that restaurant you'd load thousands of reviews with it — even if you just wanted the restaurant's name and address. That's wasteful and slow.
    
 The better design is to let Review reference the Restaurant:
-   java`// Inside Review entity
+   
+   `// Inside Review entity
    @Field(type = FieldType.Keyword)
    private String restaurantId;    // Review knows which restaurant it belongs to
    `
@@ -426,3 +427,84 @@ Then when you need reviews for a restaurant, you query the reviews index separat
 
 This is the same reason you don't embed all orders inside a Customer in a database — you keep them separate and reference by ID.
 
+# Module 3 : Authentication
+
+## Docker Workflow for a Spring Boot Project
+Here's the mental model and workflow you should follow.
+
+**What Docker is doing in your project**
+
+Your Spring Boot app itself runs on your machine (via ./mvnw or IntelliJ). Docker runs the infrastructure your app depends on — databases, search engines, auth servers. You never need to install Elasticsearch, Keycloak, or PostgreSQL directly on your machine.
+
+```
+Your machine:
+├── Spring Boot app  ← runs locally via Maven/IntelliJ
+└── Docker
+├── Elasticsearch  ← port 9200
+├── Kibana         ← port 5601
+└── Keycloak       ← port 9090
+```
+
+**The Daily Workflow**
+
+Starting your dev session:
+```
+# 1. Start infrastructure
+docker compose up -d
+
+# 2. Verify everything is healthy
+docker compose ps
+
+# 3. Start your Spring Boot app
+./mvnw spring-boot:run
+# or just run it from IntelliJ
+```
+Ending your dev session:
+```
+# Stop containers but KEEP data (volumes preserved)
+docker compose stop
+
+# Next time, just start them again
+docker compose start
+```
+**The difference between stop and down:**
+```
+docker compose stop   → pauses containers, data is preserved
+docker compose down   → removes containers, data is preserved (volumes survive)
+docker compose down -v → removes containers AND volumes (wipes all data) ← be careful
+```
+For day-to-day work, use stop and start. Use down only when you want a clean slate.
+
+### Useful Commands to Know
+
+**See what's running:**
+
+```
+docker compose ps          # containers in this project
+docker ps                  # ALL containers on your machine
+```
+**Read logs when something isn't working:**
+```
+docker compose logs elasticsearch        # logs for one service
+docker compose logs -f elasticsearch     # follow logs in real time
+docker compose logs                      # logs for everything
+```
+**Check if Elasticsearch is actually ready (not just "running" but accepting connections):**
+
+`curl http://localhost:9200
+`
+**Restart a single service without touching the others:**
+`docker compose restart elasticsearch
+`
+**Completely wipe and start fresh (when things are really broken):**
+```
+docker compose down -v      # removes containers AND data volumes
+docker compose up -d        # starts fresh with empty data
+```
+**The Most Common Mistake**
+Running ./mvnw clean install or starting your app before Docker containers are up. Spring Boot tries to connect to Elasticsearch immediately on startup — if it's not running yet, it fails.
+Always start Docker first, app second. A quick check before starting your app:
+```
+docker compose ps   # are they all "running"?
+curl http://localhost:9200  # is Elasticsearch actually responding?
+```

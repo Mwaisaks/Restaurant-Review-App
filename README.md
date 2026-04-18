@@ -508,3 +508,244 @@ Always start Docker first, app second. A quick check before starting your app:
 docker compose ps   # are they all "running"?
 curl http://localhost:9200  # is Elasticsearch actually responding?
 ```
+
+## How Keycloak Works
+
+Let me build this up from the ground, using your restaurant app as the example throughout.
+
+---
+
+### The Core Problem Keycloak Solves
+
+Without Keycloak, you'd have to build all of this yourself inside your Spring Boot app:
+
+```
+User registration, password hashing, login endpoints,
+JWT generation, token validation, token refresh,
+role management, password reset, session management...
+```
+
+Keycloak is a dedicated server that handles all of that for you. Your Spring Boot app's only job becomes: **"is this token valid, and what roles does it have?"**
+
+---
+
+### The Three Main Concepts
+
+**Realm**
+A realm is an isolated space — it has its own users, roles, clients, and settings. Think of it like a tenant.
+
+```
+master realm      → Keycloak's own admin space (never use for your app)
+restaurant realm  → your app's users, roles, and settings live here
+```
+
+This is why you always create a new realm for each project.
+
+---
+
+**Client**
+A client is an application that's allowed to talk to Keycloak. In your case you have two:
+
+```
+restaurant-backend  → your Spring Boot API (validates tokens)
+restaurant-frontend → your React app (sends users to login, receives tokens)
+```
+
+Each client has its own configuration — what URLs it's allowed to redirect to, what type of tokens it gets, etc.
+
+---
+
+**User**
+A user is exactly what it sounds like — someone with a username, password, email, and roles. This is what you just created in the UI. Keycloak stores and manages these entirely on its own.
+
+---
+
+### The Login Flow — Step by Step
+
+Here's exactly what happens when someone logs into your restaurant app:
+
+```
+1. User clicks "Login" in React frontend
+          ↓
+2. React redirects user to Keycloak's login page
+   http://localhost:9090/realms/restaurant/protocol/openid-connect/auth
+          ↓
+3. User enters username and password on Keycloak's page
+          ↓
+4. Keycloak validates credentials
+          ↓
+5. Keycloak redirects back to React with an Authorization Code
+          ↓
+6. React exchanges the code for tokens (Access Token + Refresh Token)
+          ↓
+7. React stores the Access Token
+          ↓
+8. React makes API calls to Spring Boot with the token in the header:
+   Authorization: Bearer eyJhbGciOiJSUzI1NiJ9...
+          ↓
+9. Spring Boot validates the token with Keycloak
+          ↓
+10. If valid → process the request
+    If invalid → return 401 Unauthorized
+```
+
+Your Spring Boot app **never sees the user's password**. Ever. Keycloak handles that entirely.
+
+---
+
+### What's Inside a Token
+
+When Keycloak issues a token it's a **JWT (JSON Web Token)**. It's base64 encoded — you can paste one into [jwt.io](https://jwt.io) to see what's inside. It looks like this:
+
+```json
+{
+  "sub": "a1b2c3-uuid",           ← this is the user's ID (maps to your User entity)
+  "preferred_username": "john",   ← username
+  "given_name": "John",           ← first name
+  "email": "john@example.com",
+  "realm_access": {
+    "roles": ["user", "restaurant_owner"]  ← roles
+  },
+  "exp": 1713000000,              ← expiry timestamp
+  "iss": "http://localhost:9090/realms/restaurant"  ← who issued this token
+}
+```
+
+This is why your `application.properties` has:
+
+```properties
+spring.security.oauth2.resourceserver.jwt.issuer-uri=http://localhost:9090/realms/restaurant
+```
+
+Spring Boot uses that URL to fetch Keycloak's public key and verify that tokens are genuinely signed by your Keycloak server and haven't been tampered with.
+
+---
+
+### Roles — How Authorization Works
+
+Keycloak has two levels of roles:
+
+**Realm roles** — available across your entire realm:
+```
+user            → basic logged-in user
+restaurant_owner → can create/manage restaurants
+admin           → full access
+```
+
+**Client roles** — specific to one client/application.
+
+In your Spring Boot app you then use these roles to protect endpoints:
+
+```java
+@GetMapping("/restaurants")
+public List<RestaurantDTO> getAllRestaurants() {
+    // anyone authenticated can see this
+}
+
+@PostMapping("/restaurants")
+@PreAuthorize("hasRole('restaurant_owner')")  // only restaurant owners
+public RestaurantDTO createRestaurant(@RequestBody RestaurantDTO dto) {
+}
+
+@DeleteMapping("/restaurants/{id}")
+@PreAuthorize("hasRole('admin')")  // only admins
+public void deleteRestaurant(@PathVariable String id) {
+}
+```
+
+---
+
+### Token Types — Access vs Refresh
+
+Keycloak issues two tokens:
+
+**Access Token** — short lived (default 5 minutes). This is what gets sent with every API request. Short lived so that if stolen, it expires quickly.
+
+**Refresh Token** — long lived (default 30 minutes or more). Used to get a new Access Token without making the user log in again.
+
+```
+Access Token expires
+        ↓
+React uses Refresh Token to silently get a new Access Token
+        ↓
+User never sees a login page again
+        ↓
+Eventually Refresh Token expires too → user must log in again
+```
+
+---
+
+### How Spring Boot Validates Tokens
+
+When your Spring Boot app receives a request with a token, here's what happens internally:
+
+```
+Request arrives with: Authorization: Bearer <token>
+        ↓
+Spring Security intercepts it
+        ↓
+Fetches Keycloak's public key from:
+http://localhost:9090/realms/restaurant/protocol/openid-connect/certs
+        ↓
+Verifies the token signature
+        ↓
+Checks the token hasn't expired
+        ↓
+Checks the issuer matches your configured issuer-uri
+        ↓
+Extracts user info and roles from the token claims
+        ↓
+Makes them available via SecurityContextHolder
+```
+
+Your app never calls Keycloak on every request — it just uses the public key to verify the signature locally. That's what makes JWTs efficient.
+
+---
+
+### Accessing User Info in Your Spring Boot Code
+
+Once the token is validated, you can access the logged-in user anywhere:
+
+```java
+@GetMapping("/me")
+public String getCurrentUser(@AuthenticationPrincipal Jwt jwt) {
+    String userId = jwt.getSubject();                          // the "sub" claim
+    String username = jwt.getClaimAsString("preferred_username");
+    String givenName = jwt.getClaimAsString("given_name");
+
+    return "Hello " + givenName;
+}
+```
+
+This `userId` is exactly what you store as `createdById` in your Restaurant entity — it's the bridge between Keycloak's user and your app's data.
+
+---
+
+### The Full Picture for Your Restaurant App
+
+```
+React Frontend
+  → Login via Keycloak UI
+  → Receives JWT token
+  → Sends token with every API call
+
+Spring Boot Backend
+  → Validates token signature using Keycloak's public key
+  → Extracts userId (sub) from token
+  → Uses userId to look up/create User in Elasticsearch
+  → Enforces roles (user, restaurant_owner, admin)
+  → Returns data
+
+Keycloak
+  → Owns all users and passwords
+  → Issues and signs tokens
+  → Manages roles
+  → Your Spring Boot app trusts its tokens
+```
+
+The users you created in the Keycloak UI are now real users who can log in through your frontend, receive a token, and make authenticated requests to your Spring Boot API.
+
+# Photo Upload
+**File Storage Design**
+
+

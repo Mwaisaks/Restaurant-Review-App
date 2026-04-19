@@ -745,6 +745,215 @@ Keycloak
 
 The users you created in the Keycloak UI are now real users who can log in through your frontend, receive a token, and make authenticated requests to your Spring Boot API.
 
+## Security Risks with Keycloak
+
+### 1. Exposed Admin Console
+The biggest risk. If `http://yourapp.com/auth/admin` is publicly accessible, anyone who finds it can attempt to brute-force the admin credentials and take over your entire auth system — every user, every app.
+
+**Fix:** Restrict the admin console to internal network only in production. It should never be on a public-facing URL.
+
+---
+
+### 2. Weak Admin Credentials
+Keycloak's default admin is literally `admin/admin` in some setups. If you deploy to production without changing this, you're wide open.
+
+**Fix:** Strong admin password, ideally a service account with a generated password stored in a secrets manager.
+
+---
+
+### 3. Running Without HTTPS
+Tokens sent over plain HTTP can be intercepted. Anyone who captures a token can impersonate that user for the token's lifetime.
+
+**Fix:** Always HTTPS in production. HTTP is fine only in local dev.
+
+---
+
+### 4. Long Token Lifetimes
+If access tokens live for hours and one gets stolen, the attacker has hours of access. There's no way to invalidate a JWT once issued — it's valid until it expires.
+
+**Fix:** Keep access tokens short (5-15 minutes). Use refresh tokens for silent renewal.
+
+---
+
+### 5. Not Validating the Issuer
+If your Spring Boot app doesn't check the `iss` (issuer) claim in the token, a token from a completely different Keycloak realm or server could be accepted.
+
+**Fix:** Always configure `issuer-uri` in your `application.properties`. Spring Security handles this automatically when configured correctly.
+
+---
+
+### 6. Overprivileged Roles
+Giving users more roles than they need. If a restaurant owner account gets compromised and it has admin roles, the damage is much worse.
+
+**Fix:** Principle of least privilege — give users only the roles they actually need.
+
+---
+
+### 7. Keycloak Version Vulnerabilities
+Keycloak has had serious CVEs (security vulnerabilities) in the past. Running an old version means running known vulnerabilities.
+
+**Fix:** Keep Keycloak updated, especially in production.
+
+---
+
+## When Should You Use Keycloak?
+
+Use Keycloak when you have one or more of these situations:
+
+```
+Multiple apps sharing the same users  → SSO makes sense
+Microservices architecture            → central auth server needed
+Need social login (Google, GitHub)    → Keycloak supports this out of the box
+Need fine-grained roles/permissions   → Keycloak's role system handles this
+Don't want to build auth yourself     → Keycloak saves months of work
+Enterprise/compliance requirements    → Keycloak is battle-tested
+```
+
+**Simpler alternatives are better when:**
+```
+Single small app, one team            → Spring Security + JWT is enough
+You're using a cloud platform         → AWS Cognito, Firebase Auth are easier
+Early startup, moving fast            → Auth0 or Clerk have less setup overhead
+```
+
+---
+
+## Your Case Scenario — Invite-Only App with Temporary Passwords
+
+**Yes, this is exactly where Keycloak shines.** What you're describing is a very common enterprise pattern, and Keycloak has built-in support for all of it.
+
+The flow you described works like this in Keycloak:
+
+```
+Admin creates user in Keycloak (with temporary password)
+        ↓
+User receives credentials (via email or admin hands them over)
+        ↓
+User logs in with temporary password
+        ↓
+Keycloak automatically forces "Required Actions" before letting them in:
+  → Set new password
+  → Verify email (optional)
+  → Set up MFA (optional)
+        ↓
+User sets their password and gains access
+```
+
+In Keycloak this is called a **Required Action**. When you create a user you can tick "Update Password" and Keycloak enforces it on first login automatically — you don't build any of that logic yourself.
+
+---
+
+## Adding Users Automatically — Not Manually
+
+You absolutely don't have to add users manually through the UI. There are three ways to do it programmatically:
+
+---
+
+### Option 1 — Keycloak Admin REST API
+Keycloak exposes a full REST API for managing users. You can call it from your Spring Boot app:
+
+```java
+// Example: create a user via Keycloak Admin API
+POST http://localhost:9090/admin/realms/restaurant/users
+Authorization: Bearer <admin-token>
+
+{
+  "username": "john_doe",
+  "email": "john@example.com",
+  "enabled": true,
+  "credentials": [{
+    "type": "password",
+    "value": "TempPass123!",
+    "temporary": true       ← forces password reset on first login
+  }],
+  "requiredActions": ["UPDATE_PASSWORD"]
+}
+```
+
+So your flow could be:
+
+```
+You have a CSV/database of users
+        ↓
+Spring Boot reads the list
+        ↓
+Calls Keycloak Admin API for each user
+        ↓
+Keycloak creates the user with a temporary password
+        ↓
+You email each user their temporary credentials
+        ↓
+They log in and are forced to set a new password
+```
+
+---
+
+### Option 2 — Keycloak Admin Java Client
+Instead of raw HTTP calls, use the official Keycloak Admin Client library:
+
+```xml
+<dependency>
+    <groupId>org.keycloak</groupId>
+    <artifactId>keycloak-admin-client</artifactId>
+    <version>23.0.0</version>
+</dependency>
+```
+
+```java
+Keycloak keycloak = KeycloakBuilder.builder()
+    .serverUrl("http://localhost:9090")
+    .realm("master")
+    .clientId("admin-cli")
+    .username("admin")
+    .password("admin")
+    .build();
+
+UserRepresentation user = new UserRepresentation();
+user.setUsername("john_doe");
+user.setEmail("john@example.com");
+user.setEnabled(true);
+
+CredentialRepresentation credential = new CredentialRepresentation();
+credential.setType(CredentialRepresentation.PASSWORD);
+credential.setValue("TempPass123!");
+credential.setTemporary(true);
+
+user.setCredentials(List.of(credential));
+user.setRequiredActions(List.of("UPDATE_PASSWORD"));
+
+keycloak.realm("restaurant").users().create(user);
+```
+
+Clean, type-safe, no raw HTTP needed.
+
+---
+
+### Option 3 — Keycloak Import (Bulk)
+If you have a large existing dataset, you can export users as a JSON file and import them directly into Keycloak in one go — useful for a one-time migration.
+
+---
+
+## Putting It All Together for Your Scenario
+
+```
+Existing database of users (staff, members, etc.)
+        ↓
+Admin runs a Spring Boot script / endpoint
+        ↓
+Script calls Keycloak Admin API for each user
+        ↓
+Users created in Keycloak with temporary passwords
+        ↓
+App emails each user their credentials
+        ↓
+User logs in → Keycloak forces password change
+        ↓
+User is in, app is secure, you built none of the auth logic
+```
+
+Keycloak was genuinely designed for this pattern. The "temporary password + forced reset" flow is one of its core use cases, especially in enterprise and internal-tool applications.
+
+
 # Photo Upload
 **File Storage Design**
 

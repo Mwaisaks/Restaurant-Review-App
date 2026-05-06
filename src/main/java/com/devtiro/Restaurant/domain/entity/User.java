@@ -24,4 +24,7 @@ public class User {
 
     @Field(type = FieldType.Text)
     private String givenName;
+
+    @Field(type = FieldType.Text)
+    private String familyName;
 }

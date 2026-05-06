@@ -48,6 +48,9 @@ public class Restaurant {
     private List<Photo> photos = new ArrayList<>();
 
     @Field(type = FieldType.Nested)
+    private List<Review> reviews = new ArrayList<>();
+
+    @Field(type = FieldType.Nested)
     private String createdBy;
 
 }

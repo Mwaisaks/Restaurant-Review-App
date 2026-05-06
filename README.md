@@ -957,4 +957,9 @@ Keycloak was genuinely designed for this pattern. The "temporary password + forc
 # Photo Upload
 **File Storage Design**
 
+# Geoloaction
+Open street map? - live service
+
+
+
 

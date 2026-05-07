@@ -30,7 +30,7 @@ public class PhotoController {
 
     @GetMapping(path = "/{id:.*}") //why are we using regex here?
     public ResponseEntity<Resource> getPhoto(@PathVariable String id){
-        return photoService.getPhotoAsResource(id).map(photo -> //revisit streams
+        return photoService.getPhotoAsResource(id).map(photo ->
                 ResponseEntity.ok()
                         .contentType(
                                 MediaTypeFactory.getMediaType(photo)
